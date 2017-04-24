@@ -6,6 +6,7 @@ package org.bitsoftware.aws.task;
 import java.util.HashMap;
 
 import org.bitsoftware.aws.Task;
+import org.bitsoftware.aws.util.Utils;
 
 /**
  * @author Robert Hindli
@@ -17,7 +18,7 @@ abstract class AbstractTask implements Task
 	/** Task parameters <paramName, paramValue> */
 	protected HashMap<String, String> params = new HashMap<>();
 	
-	public AbstractTask(String[] params)
+	public AbstractTask(String[] params) throws InvalidTaskParamException
 	{
 		parseParams(params);
 		validateParams();
@@ -38,8 +39,25 @@ abstract class AbstractTask implements Task
 		}
 	}
 	
-	protected abstract void printParamsUsage();
+	protected abstract String getParamsUsage();
 	
-	protected abstract void validateParams();
+	protected abstract void validateParams() throws InvalidTaskParamException;
 
+	public void run()
+	{
+    	long start = System.currentTimeMillis();
+		System.out.println(getDescription() + " ...");
+    	
+    	
+    	runImpl();
+
+    	long duration = System.currentTimeMillis() - start;
+    	String totalDuration = Utils.printDurationFromMillis(duration);
+		System.out.println("Completed in " + totalDuration + ".");
+
+	}
+	
+	protected abstract void runImpl();
+	
+	protected abstract String getDescription();
 }

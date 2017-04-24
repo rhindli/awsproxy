@@ -27,13 +27,18 @@ public class TaskFactory
 		return instance;
 	}
 	
-	public Task getTask(String taskName, String[] taskParams)
+	public Task getTask(String taskName, String[] taskParams) throws InvalidTaskParamException
 	{
 		if(S3UploadTask.TaskName.equalsIgnoreCase(taskName))
 		{
 			return new S3UploadTask(taskParams);
 		}
-		
+
+		if(S3CreateFolderTask.TaskName.equalsIgnoreCase(taskName))
+		{
+			return new S3CreateFolderTask(taskParams);
+		}
+
 		throw new UnsupportedOperationException("Task " + taskName + " is not implemented");
 	}
 }
