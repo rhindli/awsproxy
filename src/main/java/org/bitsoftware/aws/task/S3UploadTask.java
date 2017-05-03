@@ -4,8 +4,16 @@
 package org.bitsoftware.aws.task;
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.DirectoryIteratorException;
+import java.nio.file.DirectoryStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+
+import org.bitsoftware.aws.util.Utils;
 
 import com.amazonaws.auth.AWSStaticCredentialsProvider;
 import com.amazonaws.auth.BasicAWSCredentials;
@@ -42,6 +50,7 @@ class S3UploadTask extends AbstractTask
 	private String p_awsSecretKey;
 	private String p_awsRegionName;
 	private String p_awsBucketName;
+	private String p_awsDirectoryPath;
 	private String p_acl;
 	private File p_file;
 	
@@ -59,8 +68,13 @@ class S3UploadTask extends AbstractTask
     		"-a:<awsaccesskey>          : AWS access key.\n" +
     		"-s:<awssecretkey>          : AWS secret key.\n" +
     		"-r:<awsregionname>         : AWS region name. E.g. eu-west-1, eu-central-1\n" +
-    		"-b:<bucket>                : S3 bucket where file will be uploaded.\n" +
-    		"-f:<file>                  : Path to the file to upload.\n" +
+    		"-b:<bucket>                : S3 bucket where file(s) will be uploaded.\n" +
+    		"                             Bucker must already exists in S3.\n" +
+    		"[-d:<directorypath>]       : Optional S3 folder path under specified bucket\n" +
+    		"                             where file(s) will be uploaded.\n" +
+    		"                             Any missing folder will be created automatically.\n" +
+    		"-f:<file or folder>        : Path to the file(s) to upload.\n" +
+    		"                             If this is a folder, all files in that folder will be uploaded\n" +
     		"[-acl:public-read]         : Optional access control.\n" +
     		"                             public-read: public read";
     	
@@ -85,6 +99,9 @@ class S3UploadTask extends AbstractTask
 				break;
 			case "-b":
 				p_awsBucketName = params.get(par);
+				break;
+			case "-d":
+				p_awsDirectoryPath = params.get(par);
 				break;
 			case "-f":
 				p_file = new File(params.get(par));
@@ -141,6 +158,20 @@ class S3UploadTask extends AbstractTask
 			throw new InvalidTaskParamException(err, helpMsg);
 		}
 
+		if(!StringUtils.isNullOrEmpty(p_awsDirectoryPath))
+		{
+			p_awsDirectoryPath = p_awsDirectoryPath.trim();
+			
+			if(!StringUtils.isNullOrEmpty(p_awsDirectoryPath))
+			{
+				//remove any / from the beginning
+				p_awsDirectoryPath = p_awsDirectoryPath.replace("^/+", "");
+
+				//remove any number of / from the end
+				p_awsDirectoryPath = p_awsDirectoryPath.replace("/+$", "");
+			}
+		}
+
 		if(p_file == null)
 		{
 			String err = "Missing file parameter. See usage.";
@@ -150,10 +181,6 @@ class S3UploadTask extends AbstractTask
 		else if(!p_file.exists())
 		{
 			throw new InvalidTaskParamException("File does not exists.");
-		}
-		else if(!p_file.isFile())
-		{
-			throw new InvalidTaskParamException("File parameter does not point to a file.");
 		}
 	}
 
@@ -166,9 +193,57 @@ class S3UploadTask extends AbstractTask
 		                        .withRegion(p_awsRegionName)
 		                        .build();
 
-		String fileKeyName = p_file.getName();
+		ArrayList<File> files2upload = new ArrayList<>();
 
-		PutObjectRequest por = new PutObjectRequest(p_awsBucketName, fileKeyName, p_file);
+		if(p_file.isDirectory())
+		{
+			try (DirectoryStream<Path> stream = Files.newDirectoryStream(p_file.toPath()))
+			{
+				for (Path entry : stream)
+				{
+					File file2upload = entry.toFile();
+					if(file2upload.isFile())
+						files2upload.add(file2upload);
+				}
+			}
+			catch (DirectoryIteratorException e)
+			{
+				System.err.println(e.getCause().getMessage());
+				return;
+			}
+			catch(IOException e)
+			{
+				System.err.println(e.getMessage());
+				return;
+			}
+
+			for(File f : files2upload)
+			{
+		    	long start = System.currentTimeMillis();
+				System.out.println("    Uploading file \"" + f.getName() + "\" ...");
+
+				uploadFile(s3Client, f);
+
+		    	long duration = System.currentTimeMillis() - start;
+		    	String totalDuration = Utils.printDurationFromMillis(duration);
+				System.out.println("    Completed in " + totalDuration + ".");
+			}
+		}
+		else
+			uploadFile(s3Client, p_file);
+	       
+	}
+	
+	private void uploadFile(AmazonS3 s3Client, File file)
+	{
+		String fileKeyName = "";
+		
+		if(!StringUtils.isNullOrEmpty(p_awsDirectoryPath))
+			fileKeyName += (p_awsDirectoryPath + "/");
+		
+		fileKeyName += file.getName();
+
+		PutObjectRequest por = new PutObjectRequest(p_awsBucketName, fileKeyName, file);
 		ObjectMetadata om = new ObjectMetadata();
 		por.setMetadata(om);
 		por.setStorageClass(StorageClass.ReducedRedundancy);
@@ -213,13 +288,16 @@ class S3UploadTask extends AbstractTask
         }
         finally
         {
-        	tm.shutdownNow();
+        	tm.shutdownNow(false);
         }
 	}
 	
 	@Override
 	public String getDescription()
 	{
+		if(p_file.isDirectory())
+			return "Uploading files from folder \"" + p_file.getAbsolutePath() + "\"";
+		
 		return "Uploading file \"" + p_file.getName() + "\"";
 	}
 }
