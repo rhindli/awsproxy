@@ -53,6 +53,7 @@ class S3UploadTask extends AbstractTask
 	private String p_awsDirectoryPath;
 	private String p_acl;
 	private File p_file;
+	private boolean p_recursive;
 	
 	/** Constructor */
 	public S3UploadTask(String[] params) throws InvalidTaskParamException
@@ -72,9 +73,15 @@ class S3UploadTask extends AbstractTask
     		"                             Bucker must already exists in S3.\n" +
     		"[-d:<directorypath>]       : Optional S3 folder path under specified bucket\n" +
     		"                             where file(s) will be uploaded.\n" +
+    		"                             If not specified the file(s) will be uploaded directly under the bucket.\n" +
     		"                             Any missing folder will be created automatically.\n" +
     		"-f:<file or folder>        : Path to the file(s) to upload.\n" +
     		"                             If this is a folder, all files in that folder will be uploaded\n" +
+    		"[-t[:false|true]           : Optional indication to upload the whole file tree under the specified folder.\n" +
+    		"                             Used only if uploading a folder.\n" +
+    		"                             Ignored if uploading a file.\n" +
+    		"                             Default value if not specified is false.\n" +
+    		"                             Default value if specified without true or false indication is true.\n" +
     		"[-acl:public-read]         : Optional access control.\n" +
     		"                             public-read: public read";
     	
@@ -105,6 +112,13 @@ class S3UploadTask extends AbstractTask
 				break;
 			case "-f":
 				p_file = new File(params.get(par));
+				break;
+			case "-t":
+				String v = params.get(par);
+				if(v == null)
+					p_recursive = true;
+				else
+					p_recursive = Boolean.valueOf(v);
 				break;
 			case "-acl":
 				p_acl = params.get(par);
@@ -158,19 +172,7 @@ class S3UploadTask extends AbstractTask
 			throw new InvalidTaskParamException(err, helpMsg);
 		}
 
-		if(!StringUtils.isNullOrEmpty(p_awsDirectoryPath))
-		{
-			p_awsDirectoryPath = p_awsDirectoryPath.trim();
-			
-			if(!StringUtils.isNullOrEmpty(p_awsDirectoryPath))
-			{
-				//remove any / from the beginning
-				p_awsDirectoryPath = p_awsDirectoryPath.replace("^/+", "");
-
-				//remove any number of / from the end
-				p_awsDirectoryPath = p_awsDirectoryPath.replace("/+$", "");
-			}
-		}
+		p_awsDirectoryPath = normalizePath(p_awsDirectoryPath);
 
 		if(p_file == null)
 		{
@@ -193,53 +195,86 @@ class S3UploadTask extends AbstractTask
 		                        .withRegion(p_awsRegionName)
 		                        .build();
 
-		ArrayList<File> files2upload = new ArrayList<>();
+		ArrayList<File2Upload> files2Upload = getFiles2Upload(p_file, 0);
 
-		if(p_file.isDirectory())
+		if(files2Upload != null)
 		{
-			try (DirectoryStream<Path> stream = Files.newDirectoryStream(p_file.toPath()))
+			for(File2Upload f : files2Upload)
+			{
+		    	long start = System.currentTimeMillis();
+
+		    	if(f.Level > 0)
+				{
+		    		String RelativePath = (StringUtils.hasValue(f.RelativePath) ? f.RelativePath + "/" : ""); 
+		    		System.out.println("    Uploading file \"" + RelativePath + f.File.getName() + "\" ...");
+				}
+	
+				uploadFile(s3Client, f.File, f.RelativePath);
+	
+		    	if(f.Level > 0)
+		    	{
+			    	long duration = System.currentTimeMillis() - start;
+			    	String totalDuration = Utils.printDurationFromMillis(duration);
+					System.out.println("    Completed in " + totalDuration + ".");
+		    	}
+			}
+		}
+	       
+	}
+	
+	private ArrayList<File2Upload> getFiles2Upload(File file, int level)
+	{
+		ArrayList<File2Upload> files2upload = new ArrayList<>();
+
+		if(file.isFile())
+		{
+			String rootDirPath = p_file.getAbsolutePath();
+			if(p_file.isFile())
+				rootDirPath = p_file.getParentFile().getAbsolutePath();
+
+			String filePath = file.getParentFile().getAbsolutePath();
+			String relativePath = filePath.replace(rootDirPath, "");
+
+			relativePath = normalizePath(relativePath);
+			
+			File2Upload file2Upload = new File2Upload(file, relativePath, level);
+			files2upload.add(file2Upload);
+		}
+		else if(level == 0 || p_recursive)
+		{
+			try (DirectoryStream<Path> stream = Files.newDirectoryStream(file.toPath()))
 			{
 				for (Path entry : stream)
 				{
-					File file2upload = entry.toFile();
-					if(file2upload.isFile())
-						files2upload.add(file2upload);
+					File fileEntry = entry.toFile();
+					ArrayList<File2Upload> dirFiles2Upload = getFiles2Upload(fileEntry, level+1);
+					files2upload.addAll(dirFiles2Upload);
 				}
 			}
 			catch (DirectoryIteratorException e)
 			{
 				System.err.println(e.getCause().getMessage());
-				return;
+				return null;
 			}
 			catch(IOException e)
 			{
 				System.err.println(e.getMessage());
-				return;
-			}
-
-			for(File f : files2upload)
-			{
-		    	long start = System.currentTimeMillis();
-				System.out.println("    Uploading file \"" + f.getName() + "\" ...");
-
-				uploadFile(s3Client, f);
-
-		    	long duration = System.currentTimeMillis() - start;
-		    	String totalDuration = Utils.printDurationFromMillis(duration);
-				System.out.println("    Completed in " + totalDuration + ".");
+				return null;
 			}
 		}
-		else
-			uploadFile(s3Client, p_file);
-	       
+		
+		return files2upload;
 	}
 	
-	private void uploadFile(AmazonS3 s3Client, File file)
+	private void uploadFile(AmazonS3 s3Client, File file, String relativePath)
 	{
 		String fileKeyName = "";
 		
 		if(!StringUtils.isNullOrEmpty(p_awsDirectoryPath))
 			fileKeyName += (p_awsDirectoryPath + "/");
+		
+		if(!StringUtils.isNullOrEmpty(relativePath))
+			fileKeyName += (relativePath + "/");
 		
 		fileKeyName += file.getName();
 
@@ -295,9 +330,48 @@ class S3UploadTask extends AbstractTask
 	@Override
 	public String getDescription()
 	{
-		if(p_file.isDirectory())
-			return "Uploading files from folder \"" + p_file.getAbsolutePath() + "\"";
+		String awsDestination = p_awsBucketName +
+				(StringUtils.hasValue(p_awsDirectoryPath) ? "/" + p_awsDirectoryPath : "");
 		
-		return "Uploading file \"" + p_file.getName() + "\"";
+		if(p_file.isDirectory())
+			return "Uploading files from folder \"" + p_file.getAbsolutePath() + "\" to \"" + awsDestination + "\"";
+		
+		return "Uploading file \"" + p_file.getName() + "\" to \"" + awsDestination + "\"";
 	}
+	
+
+	private String normalizePath(String path)
+	{
+		if(path != null)
+			path = path.trim();
+		
+		if(StringUtils.isNullOrEmpty(path))
+			return path;
+		
+		path = path.replace("\\", "/");
+		
+		//remove any / from the beginning
+		path = path.replaceAll("^/+", "");
+
+		//remove any number of / from the end
+		path = path.replaceAll("/+$", "");
+		
+		return path;
+	}
+	
+	private static class File2Upload
+	{
+		File File;
+		String RelativePath;
+		int Level;
+
+		File2Upload(File f, String relativePath, int level)
+		{
+			this.File = f;
+			this.RelativePath = relativePath;
+			this.Level = level;
+		}
+		
+	}
+
 }
