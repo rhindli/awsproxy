@@ -281,7 +281,6 @@ class S3UploadTask extends AbstractTask
 		PutObjectRequest por = new PutObjectRequest(p_awsBucketName, fileKeyName, file);
 		ObjectMetadata om = new ObjectMetadata();
 		por.setMetadata(om);
-		por.setStorageClass(StorageClass.ReducedRedundancy);
 
 		AccessControlList acl = new AccessControlList();
 
